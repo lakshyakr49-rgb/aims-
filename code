@@ -1,0 +1,104 @@
+import cv2
+import mediapipe as mp
+import time
+import numpy as np
+
+# Initialize MediaPipe Tasks
+BaseOptions = mp.tasks.BaseOptions
+GestureRecognizer = mp.tasks.vision.GestureRecognizer
+GestureRecognizerOptions = mp.tasks.vision.GestureRecognizerOptions
+VisionRunningMode = mp.tasks.vision.RunningMode
+
+latest_result = None
+
+def save_result(result: mp.tasks.vision.GestureRecognizerResult, output_image: mp.Image, timestamp_ms: int):
+    global latest_result
+    latest_result = result
+
+# --- NEW: CUSTOM GESTURE LOGIC ---
+def get_custom_gesture(hand_landmarks):
+    """
+    Detects gestures based on landmark coordinates.
+    Landmark indices: Index(8), Middle(12), Ring(16), Pinky(20), Thumb(4)
+    """
+    fingers_up = []
+    
+    # Check 4 fingers (Index, Middle, Ring, Pinky) 
+    # In MediaPipe, Y decreases as you move UP the screen.
+    tips = [8, 12, 16, 20]
+    pips = [6, 10, 14, 18] # Joints below tips
+    
+    for tip, pip in zip(tips, pips):
+        if hand_landmarks[tip].y < hand_landmarks[pip].y:
+            fingers_up.append(True)
+        else:
+            fingers_up.append(False)
+
+    # 1. Custom Gesture: "Spider-Man" (Index + Pinky up, Middle + Ring down)
+    if fingers_up == [True, False, False, True]:
+        return "SPIDERMAN"
+    
+    # 2. Custom Gesture: "OK Sign" (Index down, Middle + Ring + Pinky up)
+    if fingers_up == [False, True, True, True]:
+        return "OK_SIGN"
+
+    # 3. Custom Gesture: "Point" (Only Index up)
+    if fingers_up == [True, False, False, False]:
+        return "POINTING"
+
+    return None
+
+options = GestureRecognizerOptions(
+    base_options=BaseOptions(model_asset_path='gesture_recognizer.task'),
+    running_mode=VisionRunningMode.LIVE_STREAM,
+    result_callback=save_result
+)
+
+mp_drawing = mp.tasks.vision.drawing_utils
+mp_drawing_styles = mp.tasks.vision.drawing_styles
+mp_hands_connections = mp.tasks.vision.HandLandmarksConnections
+
+
+
+with GestureRecognizer.create_from_options(options) as recognizer:
+    cap = cv2.VideoCapture(0)
+
+    while cap.isOpened():
+        success, frame = cap.read()
+        if not success: break
+
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+        
+        timestamp = int(time.time() * 1000)
+        recognizer.recognize_async(mp_image, timestamp)
+
+        if latest_result is not None and latest_result.hand_landmarks:
+            for i, hand_landmarks in enumerate(latest_result.hand_landmarks):
+                # 1. Draw Default Landmarks
+                mp_drawing.draw_landmarks(
+                    frame,
+                    hand_landmarks,
+                    mp_hands_connections.HAND_CONNECTIONS,
+                    mp_drawing_styles.get_default_hand_landmarks_style(),
+                    mp_drawing_styles.get_default_hand_connections_style())
+
+                # 2. Get Default Gesture (from .task file)
+                display_text = "Unknown"
+                if latest_result.gestures and i < len(latest_result.gestures):
+                    display_text = latest_result.gestures[i][0].category_name
+
+                # 3. Get Custom Gesture (from our logic)
+                custom = get_custom_gesture(hand_landmarks)
+                if custom:
+                    display_text = custom
+
+                cv2.putText(frame, f"Gesture: {display_text}", (50, 50 + (i*40)), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+
+        cv2.imshow('Gesture Recognition', frame)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
